@@ -1,0 +1,985 @@
+(function() {
+    // --- Global state and constants ---
+    if (document.getElementById('rat-client-container')) {
+        // Attempt to remove existing one if found, to allow re-injection for testing
+        const existingContainer = document.getElementById('rat-client-container');
+        if (existingContainer) existingContainer.remove();
+        const existingStyles = document.getElementById('rat-styles');
+        if (existingStyles) existingStyles.remove();
+        console.log('Rat Tool: Removed existing instance.');
+    }
+
+    const RAT_CLIENT_ID = 'rat-client-container';
+
+    // !!! IMPORTANT: REPLACE WITH YOUR ACTUAL GEMINI API KEY PARTS !!!
+    // Example: if your key is "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdefg",
+    // you might split it like: ['ABCDEFGHIJK', 'LMNOPQRSTUV', 'WXYZ1234567', '890abcdefg']
+    // You MUST replace these with your actual key parts for the AI to work.
+    const GEMINI_API_KEY_PARTS = ['AIzaSyB7IqPxFXhap9jJgOarHhylkGNftCK', 'T', '1', 'c', 'c']; // <-- REPLACE THESE!
+
+    let geminiAPIKey = null; // Will be assembled from parts
+
+    // Other global vars
+    let autoclickIntervalId = null;
+    let isAutoclicking = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+    let autoclickerKeydownListener = null;
+    let mouseMoveListenerGlobal = null;
+
+    let matrixIntervalId = null;
+    let matrixCanvas = null;
+    let matrixCtx = null;
+    const matrixFontSize = 12;
+    let matrixColumns = 0;
+    let matrixDrops = [];
+    const matrixChars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890@#$%^&*()+=_[]{}\\|;:?/.,<>-ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽltal';
+
+    // --- Helper: Assemble API Key ---
+    function getGeminiApiKey() {
+        if (!geminiAPIKey) {
+            // Check if user has replaced placeholders. This is a crucial check.
+            if (GEMINI_API_KEY_PARTS.includes("Part 1") || GEMINI_API_KEY_PARTS.includes("PART1") || GEMINI_API_KEY_PARTS.join('') === 'ABCD') {
+                console.error("Rat Tool: Gemini API Key parts are placeholders or the default example. Please update them in the script with your actual key.");
+                // Display a modal to the user about the API key issue
+                const modal = document.createElement('div');
+                modal.style.cssText = `
+                    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                    background-color: var(--current-bg-secondary); padding: 20px; border-radius: 10px;
+                    box-shadow: 0 5px 15px rgba(0,0,0,0.3); z-index: 2147483647;
+                    color: var(--current-text-bright); text-align: center;
+                    width: 300px;
+                `;
+                modal.innerHTML = `
+                    <p style="color: var(--current-danger); font-weight: bold;">API Key Missing/Invalid!</p>
+                    <p>Please replace the placeholder API key parts in the JavaScript file with your actual Gemini API key for the AI chat to work.</p>
+                    <button class="rat-action-button" onclick="this.parentNode.remove()">OK</button>
+                `;
+                document.body.appendChild(modal);
+                return null;
+            }
+            geminiAPIKey = GEMINI_API_KEY_PARTS.join('');
+        }
+        return geminiAPIKey;
+    }
+
+    // --- Styles ---
+    const stylesString = `
+        :root {
+           --rat-bg-dark-theme: #282c34; --rat-bg-light-theme: #3a3f4b; --rat-accent-theme: #61afef;
+           --rat-text-theme: #abb2bf; --rat-text-bright-theme: #ffffff; --rat-border-theme: #4f5666;
+           --rat-shadow-theme: rgba(0, 0, 0, 0.5); --rat-shadow-light-theme: rgba(97, 175, 239, 0.3);
+           --rat-success-theme: #98c379; --rat-danger-theme: #e06c75; --rat-rainbow-speed: 4s;
+           --rat-animation-duration: 0.3s; --rat-animation-timing: cubic-bezier(0.25, 0.8, 0.25, 1);
+           --rat-control-bar-height: 45px;
+
+           /* Derived colors for replacing color-mix */
+           --rat-nav-active-bg-dark: rgba(97, 175, 239, 0.15); /* #61afef at 15% opacity */
+           --rat-card-shadow-color-dark: rgba(0, 0, 0, 0.25); /* Original shadow rgba(0,0,0,0.5) at 50% opacity */
+
+           --current-bg-main: var(--rat-bg-dark-theme);
+           --current-bg-secondary: var(--rat-bg-light-theme);
+           --current-accent: var(--rat-accent-theme);
+           --current-text: var(--rat-text-theme);
+           --current-text-bright: var(--rat-text-bright-theme);
+           --current-border: var(--rat-border-theme);
+           --current-shadow: var(--rat-shadow-theme);
+           --current-shadow-light: var(--rat-shadow-light-theme);
+           --current-success: var(--rat-success-theme);
+           --current-danger: var(--rat-danger-theme);
+
+           /* Variables for color-mix replacements */
+           --current-nav-active-bg: var(--rat-nav-active-bg-dark);
+           --current-card-shadow-color: var(--rat-card-shadow-color-dark);
+        }
+
+        .rat-light-theme-active {
+            --current-bg-main: #f0f2f5; /* Light gray background */
+            --current-bg-secondary: #ffffff; /* White for cards/sidebar */
+            --current-accent: #1890ff; /* Standard blue accent */
+            --current-text: #434a54; /* Darker text */
+            --current-text-bright: #000000; /* Black for titles */
+            --current-border: #d9d9d9; /* Lighter border */
+            --current-shadow: rgba(0, 0, 0, 0.1);
+            --current-shadow-light: rgba(24, 144, 255, 0.2);
+            --current-success: #52c41a;
+            --current-danger: #f5222d;
+
+            /* Derived colors for replacing color-mix - Light Theme */
+            --rat-nav-active-bg-light: rgba(24, 144, 255, 0.15); /* #1890ff at 15% opacity */
+            --current-nav-active-bg: var(--rat-nav-active-bg-light);
+            --current-card-shadow-color: rgba(0, 0, 0, 0.05); /* Original shadow rgba(0,0,0,0.1) at 50% opacity */
+        }
+
+        #${RAT_CLIENT_ID} {
+            position: fixed; top: 50px; left: 50px;
+            min-height: var(--rat-control-bar-height); width: 550px; /* Increased width for AI */
+            background-color: var(--current-bg-main); border: 1px solid var(--current-border);
+            border-radius: 16px; box-shadow: 0 15px 35px var(--current-shadow);
+            color: var(--current-text); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            z-index: 2147483647 !important; overflow: hidden; display: flex; flex-direction: column;
+            opacity: 0; transform: scale(0.9) translateY(20px);
+            transition: opacity var(--rat-animation-duration) var(--rat-animation-timing),
+                        transform var(--rat-animation-duration) var(--rat-animation-timing),
+                        width var(--rat-animation-duration) var(--rat-animation-timing),
+                        min-height var(--rat-animation-duration) var(--rat-animation-timing),
+                        left var(--rat-animation-duration) var(--rat-animation-timing),
+                        top var(--rat-animation-duration) var(--rat-animation-timing),
+                        background-color var(--rat-animation-duration) ease, color var(--rat-animation-duration) ease;
+            user-select: none;
+        }
+        #${RAT_CLIENT_ID}.rat-minimized { width: 220px; min-height: var(--rat-control-bar-height); border-radius: 10px; }
+        #${RAT_CLIENT_ID}.rat-minimized #rat-main-interface { display: none; }
+        #${RAT_CLIENT_ID}.rat-minimized #rat-control-bar { border-bottom: none; }
+        #${RAT_CLIENT_ID}.rat-visible { opacity: 1; transform: scale(1) translateY(0); }
+        #${RAT_CLIENT_ID}.rat-rainbow-active { animation: rat-rainbow-border var(--rat-rainbow-speed) linear infinite; }
+
+        @keyframes rat-rainbow-border {
+            0%, 100% { border-color: hsl(0, 80%, 65%); box-shadow: 0 0 15px hsla(0, 80%, 65%, 0.5); }
+            17% { border-color: hsl(60, 80%, 65%); box-shadow: 0 0 15px hsla(60, 80%, 65%, 0.5); }
+            33% { border-color: hsl(120, 80%, 65%); box-shadow: 0 0 15px hsla(120, 80%, 65%, 0.5); }
+            50% { border-color: hsl(180, 80%, 65%); box-shadow: 0 0 15px hsla(180, 80%, 65%, 0.5); }
+            67% { border-color: hsl(240, 80%, 65%); box-shadow: 0 0 15px hsla(240, 80%, 65%, 0.5); }
+            83% { border-color: hsl(300, 80%, 65%); box-shadow: 0 0 15px hsla(300, 80%, 65%, 0.5); }
+        }
+
+        #rat-control-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 15px; height: var(--rat-control-bar-height); background-color: var(--current-bg-secondary); border-bottom: 1px solid var(--current-border); cursor: move; transition: background-color var(--rat-animation-duration) ease, border-color var(--rat-animation-duration) ease;}
+        #rat-control-bar-title { font-size: 1.1em; font-weight: 600; color: var(--current-text-bright); transition: color var(--rat-animation-duration) ease; }
+        .rat-window-controls button { background: none; border: none; color: var(--current-text); font-size: 1.5em; cursor: pointer; padding: 0 6px; transition: color 0.2s ease, transform 0.2s ease; line-height: 1; }
+        .rat-window-controls button:hover { color: var(--current-text-bright); transform: scale(1.1); }
+        #rat-close-btn:hover { color: var(--current-danger) !important; }
+
+        #rat-main-interface { display: flex; flex-direction: row; flex-grow: 1; opacity: 1; animation: rat-fadeInAndScaleMain var(--rat-animation-duration) var(--rat-animation-timing) forwards; min-height: 450px; /* Increased height */ }
+        @keyframes rat-fadeInAndScaleMain { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+
+        #rat-sidebar { width: 160px; background-color: var(--current-bg-secondary); padding: 15px 0; display: flex; flex-direction: column; border-right: 1px solid var(--current-border); flex-shrink: 0; transition: background-color var(--rat-animation-duration) ease, border-color var(--rat-animation-duration) ease;}
+        .rat-nav-header { padding: 0 20px 15px 20px; font-size: 1.1em; font-weight: 600; color: var(--current-text-bright); border-bottom: 1px solid var(--current-border); margin-bottom: 10px; transition: color var(--rat-animation-duration) ease, border-color var(--rat-animation-duration) ease;}
+        .rat-nav-item { display: flex; align-items: center; padding: 12px 20px; cursor: pointer; color: var(--current-text); font-size: 0.95em; transition: background-color 0.2s ease, color 0.2s ease; position: relative; }
+        .rat-nav-item svg { margin-right: 10px; fill: currentColor; min-width:18px; }
+        .rat-nav-item:hover { background-color: var(--current-accent-theme); opacity:0.6; color: var(--current-text-bright); }
+        .rat-nav-item.active {
+            color: var(--current-accent);
+            font-weight: 600;
+            background-color: var(--current-nav-active-bg);
+        }
+        .rat-nav-item.active::before { content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 4px; height: 70%; background-color: var(--current-accent); border-top-right-radius: 4px; border-bottom-right-radius: 4px; }
+
+        #rat-content-area { flex-grow: 1; padding: 20px; display: flex; flex-direction: column; overflow-y: auto; max-height: calc(450px - var(--rat-control-bar-height)); /* Adjusted max-height */ scrollbar-width: thin; scrollbar-color: var(--current-accent) var(--current-bg-main); }
+        #rat-content-area::-webkit-scrollbar { width: 8px; }
+        #rat-content-area::-webkit-scrollbar-track { background: var(--current-bg-main); border-radius: 4px; }
+        #rat-content-area::-webkit-scrollbar-thumb { background-color: var(--current-bg-secondary); border-radius: 4px; border: 1px solid var(--current-bg-main); }
+        #rat-content-area::-webkit-scrollbar-thumb:hover { background-color: var(--current-accent); }
+
+        .rat-content-section { display: none; animation: rat-contentFadeIn 0.4s var(--rat-animation-timing) forwards; }
+        .rat-content-section.active { display: block; }
+        @keyframes rat-contentFadeIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
+
+        .rat-card {
+            background-color: var(--current-bg-secondary);
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 5px 15px var(--current-card-shadow-color);
+            transition: background-color var(--rat-animation-duration) ease, box-shadow var(--rat-animation-duration) ease;
+        }
+        .rat-card-title { font-size: 1.1em; color: var(--current-text-bright); margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid var(--current-border); font-weight: 500; transition: color var(--rat-animation-duration) ease, border-color var(--rat-animation-duration) ease;}
+
+        .rat-action-button { padding: 10px 18px; background-color: var(--current-accent); border: none; border-radius: 8px; color: var(--rat-text-bright-theme); font-weight: 600; cursor: pointer; transition: background-color 0.2s ease, transform 0.15s ease; text-align:center; }
+        .rat-action-button:hover { filter: brightness(1.2); transform: translateY(-2px) scale(1.02); }
+        .rat-action-button:active { transform: translateY(0px) scale(0.98); }
+        .rat-action-button:disabled { background-color: var(--current-border); cursor: not-allowed; color: var(--current-text); }
+
+
+        .rat-toggle-container { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--current-border); transition: border-color var(--rat-animation-duration) ease;}
+        .rat-card .rat-toggle-container:last-of-type { border-bottom: none; padding-bottom: 0; }
+        .rat-card .rat-toggle-container:first-of-type { padding-top: 0; }
+        .rat-toggle-label { font-size: 0.95em; display: flex; align-items: center; color: var(--current-text); transition: color var(--rat-animation-duration) ease;}
+        .rat-switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+        .rat-switch input { opacity: 0; width: 0; height: 0; }
+        .rat-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--current-bg-main); transition: .3s var(--rat-animation-timing); border-radius: 24px; }
+        .rat-slider:before { position: absolute; content: ''; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: var(--current-text); transition: .3s var(--rat-animation-timing); border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+        input:checked + .rat-slider { background-color: var(--current-accent); }
+        input:checked + .rat-slider:before { transform: translateX(20px); background-color: white; }
+
+        .rat-slider-container label { display: block; margin-bottom: 10px; font-size: 0.95em; color: var(--current-text); transition: color var(--rat-animation-duration) ease;}
+        input[type='range'].rat-color-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; background: linear-gradient(to right, red, yellow, lime, cyan, blue, magenta, red); border-radius: 5px; outline: none; cursor: pointer; border: 1px solid var(--current-border); }
+        input[type='range'].rat-color-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; background: var(--current-accent); border-radius: 50%; border: 3px solid var(--current-bg-secondary); cursor: pointer; transition: background-color 0.2s ease, transform 0.2s ease; }
+        input[type='range'].rat-color-slider:hover::-webkit-slider-thumb { filter: brightness(1.2); transform: scale(1.1); }
+
+        #rat-matrix-canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 2147483646; pointer-events: none; display: none; }
+        #rat-script-input { width: 100%; height: 150px; background-color: var(--current-bg-main); color: var(--current-text-bright); border: 1px solid var(--current-border); border-radius: 8px; padding: 10px; margin-bottom: 10px; font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; font-size: 0.9em; resize: vertical; box-sizing: border-box; transition: background-color var(--rat-animation-duration) ease, color var(--rat-animation-duration) ease, border-color var(--rat-animation-duration) ease; }
+        #rat-script-input:focus { border-color: var(--current-accent); box-shadow: 0 0 0 3px var(--current-shadow-light); }
+        .rat-script-buttons-row { display: flex; gap: 10px; margin-bottom: 10px; }
+        .rat-script-buttons-row:last-child { margin-bottom: 0; }
+        .rat-script-buttons-row button { flex-grow: 1; } /* Using .rat-action-button for styling */
+
+        .rat-about-info { text-align: center; padding: 10px 0; }
+        .rat-about-info p { margin: 5px 0; font-size: 0.95em; color: var(--current-text); transition: color var(--rat-animation-duration) ease;}
+        .rat-about-info .version { font-size: 0.9em; color: var(--current-text); }
+        .rat-about-info .credits { font-weight: 500; color: var(--current-text-bright); }
+
+        .rat-dark-mode-filter { filter: invert(1) hue-rotate(180deg); background-color: #1a1a1a; }
+        .rat-dark-mode-filter img, .rat-dark-mode-filter video, .rat-dark-mode-filter iframe { filter: invert(1) hue-rotate(180deg); }
+
+        /* AI Chat Styles */
+        .rat-ai-chat-container { margin-bottom: 15px; }
+        .rat-ai-chat-area {
+            height: 200px; /* Adjusted height */
+            background-color: var(--current-bg-main);
+            border: 1px solid var(--current-border);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 8px;
+            overflow-y: auto;
+            font-size: 0.85em; /* Slightly smaller font for chat */
+            color: var(--current-text);
+            line-height: 1.4;
+            transition: background-color var(--rat-animation-duration) ease, border-color var(--rat-animation-duration) ease, color var(--rat-animation-duration) ease;
+        }
+        .rat-ai-chat-area p { margin: 0 0 5px 0; }
+        .rat-ai-chat-area .rat-user-message { text-align: right; color: var(--current-accent); font-weight: 500;}
+        .rat-ai-chat-area .rat-user-message strong { color: var(--current-accent); }
+        .rat-ai-chat-area .rat-ai-message { text-align: left; background-color: var(--current-bg-secondary); padding: 6px 8px; border-radius: 6px; margin-bottom: 8px; display: inline-block; max-width: 90%; word-wrap: break-word; transition: background-color var(--rat-animation-duration) ease;}
+        .rat-ai-chat-area .rat-ai-message strong { color: var(--current-text-bright); }
+        .rat-ai-chat-area .rat-loading-message, .rat-ai-chat-area .rat-system-message, .rat-ai-chat-area .rat-error-message {
+            font-style: italic;
+            color: var(--current-text);
+            opacity: 0.8;
+            text-align: center;
+            font-size: 0.9em; /* This is the smaller font size for system/loading/error messages */
+            padding: 5px;
+        }
+         .rat-ai-chat-area .rat-error-message { color: var(--current-danger); font-weight: bold; }
+         .rat-ai-chat-area .rat-system-message { color: var(--current-success); }
+
+
+        .rat-ai-input-container { display: flex; gap: 8px; }
+        .rat-ai-input {
+            flex-grow: 1;
+            padding: 8px 10px;
+            background-color: var(--current-bg-main);
+            border: 1px solid var(--current-border);
+            border-radius: 8px;
+            color: var(--current-text-bright);
+            font-size: 0.9em; /* This is the font size for the input field */
+            box-sizing: border-box;
+            resize: vertical; /* For textarea */
+            transition: background-color var(--rat-animation-duration) ease, border-color var(--rat-animation-duration) ease, color var(--rat-animation-duration) ease;
+        }
+        /* ADDED: Placeholder styling for AI input */
+        .rat-ai-input::placeholder {
+            color: var(--current-text);
+            opacity: 0.6;
+        }
+        .rat-ai-input:focus {
+            border-color: var(--current-accent);
+            box-shadow: 0 0 0 3px var(--current-shadow-light);
+            outline: none;
+        }
+        .rat-ai-input:disabled { background-color: var(--current-border); cursor: not-allowed; }
+        .rat-ai-send-btn { padding: 8px 15px; } /* Uses .rat-action-button */
+
+        /* Spinner for loading */
+        .rat-spinner {
+            border: 3px solid var(--current-border);
+            border-top: 3px solid var(--current-accent);
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            animation: rat-spin 1s linear infinite;
+            display: inline-block;
+            margin-left: 5px;
+            vertical-align: middle;
+        }
+        @keyframes rat-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    `;
+
+    // --- Main Menu HTML Structure ---
+    const mainMenuHTMLString = `
+        <div id="rat-control-bar">
+            <span id="rat-control-bar-title">Rat Tool</span>
+            <div class="rat-window-controls">
+                <button id="rat-minimize-btn" title="Minimize">—</button>
+                <button id="rat-close-btn" title="Close">X</button>
+            </div>
+        </div>
+        <div id="rat-main-interface">
+            <div id="rat-sidebar">
+                <div class="rat-nav-header">Navigation</div>
+                <div class="rat-nav-item active" data-section="ai_tool">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zM9.5 9.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5S10.33 9.5 9.5 9.5zm5 0c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5S15.33 9.5 14.5 9.5zm2.5 5H7c0 1.66 1.34 3 3 3h4c1.66 0 3-1.34 3-3z"/></svg>
+                    Tools
+                </div>
+                <div class="rat-nav-item" data-section="mods">
+                     <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3.783 14.394A3.001 3.001 0 016 12.001c0-1.102.602-2.055 1.481-2.555L6 6.001H3v2h1.51C3.568 8.878 3 10.366 3 12.001c0 1.02.312 1.948.844 2.723L3 16.001v2h3.007l-.224-.607zM21 6.001h-3l-1.488 3.445A2.99 2.99 0 0118 12.001a2.99 2.99 0 01-1.488 2.555L18 18.001h3v-2h-1.51a3.007 3.007 0 00.942-1.278c.14-.38.22-.791.22-1.223a3.001 3.001 0 00-1.068-2.127.436.436 0 00.068-.272c0-.414-.166-.798-.437-1.082A2.985 2.985 0 0019.51 8.001H21v-2zm-9 2a4 4 0 100 8 4 4 0 000-8zm0 6a2 2 0 110-4 2 2 0 010 4z"/></svg>
+                    Mods
+                </div>
+                <div class="rat-nav-item" data-section="fun">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5s.67 1.5 1.5 1.5zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg>
+                    Fun
+                </div>
+                <div class="rat-nav-item" data-section="script">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"></path></svg>
+                    Script
+                </div>
+                 <div class="rat-nav-item" data-section="settings">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12-.64l2 3.46c.12-.22.39.3.61.22l2.49 1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg>
+                    Settings
+                </div>
+            </div>
+            <div id="rat-content-area">
+                <div id="rat-content-section-ai_tool" class="rat-content-section active">
+                    <div class="rat-card">
+                        <div class="rat-card-title">Ask AI - General Questions</div>
+                        <div class="rat-ai-chat-container">
+                            <div class="rat-ai-chat-area" id="rat-ai-general-chat-area">
+                                <p class="rat-system-message">Welcome to Rat AI! Ask me anything.</p>
+                            </div>
+                            <div class="rat-ai-input-container">
+                                <textarea id="rat-ai-general-input" class="rat-ai-input" placeholder="Type your general question..." rows="2"></textarea>
+                                <button id="rat-ai-general-send" class="rat-action-button rat-ai-send-btn">Send</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="rat-card">
+                        <div class="rat-card-title">Notes</div>
+                        <div id="rat-static-notes" style="background-color: var(--current-bg-main); color: var(--current-text-bright); border: 1px solid var(--current-border); border-radius: 8px; padding: 10px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 0.9em; min-height: 100px; overflow-y: auto;">
+                            notes on things here
+                        </div>
+                    </div>
+                </div>
+                <div id="rat-content-section-mods" class="rat-content-section">
+                    <div class="rat-card"><div class="rat-card-title">Page Tools</div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Dark Website</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-dark"><span class="rat-slider"></span></label></div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Light Website</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-light"><span class="rat-slider"></span></label></div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Inspect Page</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-inspect"><span class="rat-slider"></span></label></div>
+                    </div>
+                     <div class="rat-card"><div class="rat-card-title">Page Actions</div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Hard Reset Page</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-hardreset"><span class="rat-slider"></span></label></div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Destroy Page</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-destroypage"><span class="rat-slider"></span></label></div>
+                    </div>
+                </div>
+                <div id="rat-content-section-fun" class="rat-content-section">
+                     <div class="rat-card"><div class="rat-card-title">Fun</div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Matrix Effect</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-matrix"><span class="rat-slider"></span></label></div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Autoclicker (Stop: \`)</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-autoclick"><span class="rat-slider"></span></label></div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Page Spammer (100 Tabs, Once)</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-pagespam"><span class="rat-slider"></span></label></div>
+                    </div>
+                </div>
+                <div id="rat-content-section-script" class="rat-content-section">
+                     <div class="rat-card">
+                        <div class="rat-card-title">Script Executor</div>
+                        <textarea id="rat-script-input" placeholder="Enter JavaScript code here..."></textarea>
+                        <div class="rat-script-buttons-row">
+                            <button id="rat-script-execute-button" class="rat-action-button">Execute</button>
+                            <button id="rat-script-execute-backup-button" class="rat-action-button" style="background-color: var(--current-bg-secondary); color: var(--current-text-bright); border: 1px solid var(--current-border);">Backup Execute</button>
+                        </div>
+                        <div class="rat-script-buttons-row">
+                             <button id="rat-script-save-button" class="rat-action-button" style="background-color: var(--current-bg-secondary); color: var(--current-text-bright); border: 1px solid var(--current-border);">Save Script</button>
+                             <button id="rat-script-load-button-styled" class="rat-action-button" style="background-color: var(--current-bg-secondary); color: var(--current-text-bright); border: 1px solid var(--current-border);">Load Script</button>
+                             <input type="file" id="rat-script-file-input" accept=".js,.txt" style="display:none;">
+                        </div>
+                    </div>
+                </div>
+                <div id="rat-content-section-settings" class="rat-content-section">
+                    <div class="rat-card">
+                        <div class="rat-card-title">About</div>
+                        <div class="rat-about-info">
+                            <p class="credits" style="font-size: 1.2em; color: var(--current-accent);">Rat Tool</p>
+                            <p class="version">Version: 3.0 (AI Enhanced)</p>
+                            <p> GL assesments can not be this hard bro.</p>
+                        </div>
+                    </div>
+                    <div class="rat-card">
+                        <div class="rat-card-title">Menu Appearance</div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Rainbow Menu Border</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-rainbow"><span class="rat-slider"></span></label></div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Light Mode</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-lightmode"><span class="rat-slider"></span></label></div>
+                        <div class="rat-slider-container" style="margin-top: 15px;"><label for="rat-color-slider">Custom Menu Accent</label><input type="range" id="rat-color-slider" class="rat-color-slider" min="0" max="360" value="207"></div>
+                    </div>
+                     <div class="rat-card">
+                        <div class="rat-card-title">Client Options</div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Reset Menu</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-resetmenu"><span class="rat-slider"></span></label></div>
+                        <div class="rat-toggle-container"><span class="rat-toggle-label">Client Fix</span><label class="rat-switch"><input type="checkbox" id="rat-toggle-clientfix"><span class="rat-slider"></span></label></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+
+        // --- Core Logic (IIFE) ---
+        // This function contains the main operational code of the client.
+        // It's defined and then immediately called.
+        const clientFunction = function() {
+            // --- DOM Elements (initialized after HTML is added) ---
+            let clientContainer, controlBar, mainInterface, sidebar, contentArea;
+            let minimizeBtn, closeBtn;
+            let generalAIChatArea, generalAIInput, generalAISendBtn;
+            let staticNotesDiv;
+
+
+            // --- State Variables ---
+            let isDragging = false;
+            let dragOffsetX, dragOffsetY;
+            let isMinimized = false;
+            let currentThemeHue = 207; // Default accent hue
+
+            // --- Initialize Main Menu and its Functionality ---
+            function initializeMainMenu() {
+                clientContainer = document.getElementById(RAT_CLIENT_ID);
+                controlBar = document.getElementById('rat-control-bar');
+                mainInterface = document.getElementById('rat-main-interface');
+                sidebar = document.getElementById('rat-sidebar');
+                contentArea = document.getElementById('rat-content-area');
+                minimizeBtn = document.getElementById('rat-minimize-btn');
+                closeBtn = document.getElementById('rat-close-btn');
+
+                // AI Chat elements
+                generalAIChatArea = document.getElementById('rat-ai-general-chat-area');
+                generalAIInput = document.getElementById('rat-ai-general-input');
+                generalAISendBtn = document.getElementById('rat-ai-general-send');
+
+                // Notes element (now static)
+                staticNotesDiv = document.getElementById('rat-static-notes');
+
+
+                // Make window draggable
+                if (controlBar) {
+                    controlBar.onmousedown = function(e) {
+                        if (e.target.tagName === 'BUTTON') return; // Don't drag if clicking buttons
+                        isDragging = true;
+                        dragOffsetX = e.clientX - clientContainer.offsetLeft;
+                        dragOffsetY = e.clientY - clientContainer.offsetTop;
+                        document.onmousemove = onDrag;
+                        document.onmouseup = stopDrag;
+                        controlBar.style.cursor = 'grabbing';
+                    };
+                }
+
+                // Window controls
+                if (minimizeBtn) minimizeBtn.onclick = toggleMinimize;
+                if (closeBtn) closeBtn.onclick = closeClient;
+
+                // Sidebar navigation
+                const navItems = sidebar.querySelectorAll('.rat-nav-item');
+                navItems.forEach(item => {
+                    item.onclick = () => switchSection(item.dataset.section, item);
+                });
+
+                // Initialize Toggles and other interactive elements
+                initializeToggles();
+                initializeScriptExecutor();
+
+                // AI Chat functionality
+                if (generalAISendBtn) generalAISendBtn.onclick = () => handleAISend(generalAIInput, generalAIChatArea);
+                if (generalAIInput) generalAIInput.onkeypress = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAISend(generalAIInput, generalAIChatArea); }};
+            }
+
+
+            // Helper function to escape HTML special characters
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            // --- AI Chat Handling ---
+            function addMessageToAIChat(chatArea, className, contentText, isUserMessage = false) {
+                if (!chatArea) return;
+                const messageElement = document.createElement('p');
+                messageElement.className = className;
+
+                let displayHtml = '';
+                if (isUserMessage) {
+                    displayHtml = `<strong>You:</strong> ${escapeHtml(contentText)}`;
+                } else {
+                    // For AI messages, escape all HTML, then explicitly add <br> for newlines
+                    displayHtml = `<strong>Rat AI:</strong> ${escapeHtml(contentText).replace(/\n/g, '<br>')}`;
+                }
+
+                messageElement.innerHTML = displayHtml;
+                chatArea.appendChild(messageElement);
+                chatArea.scrollTop = chatArea.scrollHeight; // Auto-scroll
+            }
+
+            async function handleAISend(inputElement, chatArea) {
+                const query = inputElement.value.trim();
+                if (!query) return;
+
+                addMessageToAIChat(chatArea, 'rat-user-message', query, true); // Pass raw query, let addMessageToAIChat handle escaping
+                inputElement.value = '';
+                inputElement.disabled = true;
+                const sendButton = inputElement.nextElementSibling; // Assuming button is next sibling
+                if (sendButton) {
+                    sendButton.disabled = true;
+                    sendButton.innerHTML = 'Sending <span class="rat-spinner"></span>';
+                }
+
+                let loadingMessage = "Fetching AI response...";
+                addMessageToAIChat(chatArea, 'rat-loading-message', loadingMessage);
+                const loadingElement = chatArea.lastChild; // Keep reference to remove later
+
+                try {
+                    const apiKey = getGeminiApiKey();
+                    if (!apiKey) {
+                        // If API key is null, it means getGeminiApiKey already showed a modal and logged an error.
+                        // We should not proceed with the fetch call.
+                        if (loadingElement) loadingElement.remove();
+                        addMessageToAIChat(chatArea, 'rat-error-message', `<strong>Error:</strong> AI chat is not configured. Please check your API key.`);
+                        return; // Exit early
+                    }
+
+                    const aiResponse = await callGeminiAPI(apiKey, query);
+                    if (loadingElement) loadingElement.remove(); // Remove "Fetching/Analyzing..." message
+                    addMessageToAIChat(chatArea, 'rat-ai-message', aiResponse); // Pass raw aiResponse, let addMessageToAIChat handle escaping and <br>
+
+                } catch (error) {
+                    console.error("Rat Tool AI Error:", error);
+                    if (loadingElement) loadingElement.remove();
+                    addMessageToAIChat(chatArea, 'rat-error-message', `<strong>Error:</strong> ${error.message}`); // Error message also escaped
+                } finally {
+                    inputElement.disabled = false;
+                    if (sendButton) {
+                        sendButton.disabled = false;
+                        sendButton.textContent = 'Send';
+                    }
+                }
+            }
+
+            // --- Gemini API Call ---
+            async function callGeminiAPI(apiKey, prompt) {
+                const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+                let parts = [{ text: prompt }];
+
+                const payload = {
+                    contents: [{ parts: parts }],
+                    generationConfig: {
+                        // "temperature": 0.7, // Example: Adjust as needed
+                        // "maxOutputTokens": 1024, // Example
+                    }
+                };
+
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    console.error("Gemini API Error Response:", errorData);
+                    throw new Error(`Gemini API request failed: ${response.status} ${errorData.error?.message || 'Unknown error'}`);
+                }
+
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    return result.candidates[0].content.parts[0].text;
+                } else if (result.promptFeedback && result.promptFeedback.blockReason) {
+                         throw new Error(`Request blocked by API: ${result.promptFeedback.blockReason} - ${JSON.stringify(result.promptFeedback.safetyRatings)}`);
+                }
+                else {
+                    console.warn("Gemini API - Unexpected response structure:", result);
+                    throw new Error("Received an empty or unexpected response from AI.");
+                }
+            }
+
+
+            // --- Drag Functionality ---
+            function onDrag(e) {
+                if (!isDragging) return;
+                clientContainer.style.left = (e.clientX - dragOffsetX) + 'px';
+                clientContainer.style.top = (e.clientY - dragOffsetY) + 'px';
+            }
+            function stopDrag() {
+                isDragging = false;
+                document.onmousemove = null;
+                document.onmouseup = null;
+                if (controlBar) controlBar.style.cursor = 'move';
+            }
+
+            // --- Window Controls ---
+            function toggleMinimize() {
+                isMinimized = !isMinimized;
+                clientContainer.classList.toggle('rat-minimized', isMinimized);
+                if (minimizeBtn) minimizeBtn.textContent = isMinimized ? '+' : '—';
+            }
+            function closeClient() {
+                // Clean up listeners and elements
+                if (autoclickerKeydownListener) document.removeEventListener('keydown', autoclickerKeydownListener);
+                if (mouseMoveListenerGlobal) document.removeEventListener('mousemove', mouseMoveListenerGlobal);
+                if (matrixIntervalId) clearInterval(matrixIntervalId);
+                if (matrixCanvas) matrixCanvas.remove();
+
+                const styleSheet = document.getElementById('rat-styles');
+                if (styleSheet) styleSheet.remove();
+
+                clientContainer.style.opacity = '0';
+                clientContainer.style.transform = 'scale(0.8) translateY(30px)';
+                setTimeout(() => {
+                    if (clientContainer) clientContainer.remove();
+                    console.log("Rat Tool closed and cleaned up.");
+                }, 300); // Match animation duration
+            }
+
+            // --- Section Switching ---
+            function switchSection(sectionId, clickedItem) {
+                // Deactivate all nav items and content sections
+                sidebar.querySelectorAll('.rat-nav-item').forEach(item => item.classList.remove('active'));
+                contentArea.querySelectorAll('.rat-content-section').forEach(section => section.classList.remove('active'));
+
+                // Activate clicked item and corresponding section
+                clickedItem.classList.add('active');
+                const targetSection = document.getElementById(`rat-content-section-${sectionId}`);
+                if (targetSection) targetSection.classList.add('active');
+            }
+
+            // --- Feature Toggles and Handlers ---
+            function initializeToggles() {
+                // Dark Website
+                const toggleDark = document.getElementById('rat-toggle-dark');
+                if (toggleDark) toggleDark.onchange = () => document.body.classList.toggle('rat-dark-mode-filter', toggleDark.checked);
+
+
+                // Light Website (page content)
+                const toggleLight = document.getElementById('rat-toggle-light');
+                if (toggleLight) toggleLight.onchange = () => {
+                    if (toggleLight.checked) document.body.classList.remove('rat-dark-mode-filter');
+                };
+
+                // Inspect Page
+                const toggleInspect = document.getElementById('rat-toggle-inspect');
+                if (toggleInspect) {
+                    let inspectorStyle = null;
+                    toggleInspect.onchange = () => {
+                        if (toggleInspect.checked) {
+                            inspectorStyle = document.createElement('style');
+                            inspectorStyle.id = 'rat-inspector-styles';
+                            inspectorStyle.textContent = '*:hover { outline: 1px dashed red !important; }';
+                            document.head.appendChild(inspectorStyle);
+                        } else {
+                            if (inspectorStyle) inspectorStyle.remove();
+                            inspectorStyle = null;
+                        }
+                    };
+                }
+                // Hard Reset Page
+                const toggleHardReset = document.getElementById('rat-toggle-hardreset');
+                if (toggleHardReset) toggleHardReset.onchange = () => {
+                    if (toggleHardReset.checked) {
+                        window.location.reload(true); // True for hard reload (bypass cache)
+                        toggleHardReset.checked = false; // Reset toggle
+                    }
+                };
+
+                // Destroy Page (simple version)
+                const toggleDestroyPage = document.getElementById('rat-toggle-destroypage');
+                if (toggleDestroyPage) toggleDestroyPage.onchange = () => {
+                    if (toggleDestroyPage.checked) {
+                        document.body.innerHTML = '<h1 style="color:red; text-align:center; font-size:5vw; margin-top:20vh;">Page Obliterated by Rat Tool</h1>';
+                        // Note: This doesn't stop scripts or truly "destroy" in a way that prevents recovery via refresh.
+                    }
+                };
+
+                // Matrix Effect
+                const toggleMatrix = document.getElementById('rat-toggle-matrix');
+                if (toggleMatrix) toggleMatrix.onchange = () => {
+                    if (toggleMatrix.checked) startMatrixEffect();
+                    else stopMatrixEffect();
+                };
+
+                // Autoclicker
+                const toggleAutoclick = document.getElementById('rat-toggle-autoclick');
+                if (toggleAutoclick) toggleAutoclick.onchange = () => {
+                    if (toggleAutoclick.checked) startAutoclicker();
+                    else stopAutoclicker();
+                };
+
+                // Page Spammer
+                const togglePageSpam = document.getElementById('rat-toggle-pagespam');
+                if (togglePageSpam) togglePageSpam.onchange = () => {
+                    if (togglePageSpam.checked) {
+                        for(let i=0; i<100; i++) window.open(window.location.href, '_blank');
+                        togglePageSpam.checked = false; // One-time action
+                    }
+                };
+
+                // Settings: Rainbow Border
+                const toggleRainbow = document.getElementById('rat-toggle-rainbow');
+                if (toggleRainbow) toggleRainbow.onchange = () => clientContainer.classList.toggle('rat-rainbow-active', toggleRainbow.checked);
+
+                // Settings: Light Mode UI
+                const toggleLightMode = document.getElementById('rat-toggle-lightmode');
+                if (toggleLightMode) toggleLightMode.onchange = () => {
+                    clientContainer.classList.toggle('rat-light-theme-active', toggleLightMode.checked);
+                };
+
+
+                // Settings: Custom Accent Color
+                const colorSlider = document.getElementById('rat-color-slider');
+                if (colorSlider) colorSlider.oninput = (e) => {
+                    currentThemeHue = e.target.value;
+                    clientContainer.style.setProperty('--current-accent', `hsl(${currentThemeHue}, 70%, 65%)`);
+                    // Update shadow light as well, make it more subtle
+                    clientContainer.style.setProperty('--current-shadow-light', `hsla(${currentThemeHue}, 70%, 65%, 0.2)`);
+
+                };
+
+                // Settings: Reset Menu
+                const toggleResetMenu = document.getElementById('rat-toggle-resetmenu');
+                if (toggleResetMenu) toggleResetMenu.onchange = () => {
+                    if (toggleResetMenu.checked) {
+                        closeClient();
+                        // To re-init, the user would need to paste the script again.
+                        // Using a custom modal for alert
+                        const modal = document.createElement('div');
+                        modal.style.cssText = `
+                            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                            background-color: var(--current-bg-secondary); padding: 20px; border-radius: 10px;
+                            box-shadow: 0 5px 15px rgba(0,0,0,0.3); z-index: 2147483647;
+                            color: var(--current-text-bright); text-align: center;
+                        `;
+                        modal.innerHTML = `
+                            <p>Rat Tool settings reset. Please re-inject the script to apply changes if needed.</p>
+                            <button class="rat-action-button" onclick="this.parentNode.remove()">OK</button>
+                        `;
+                        document.body.appendChild(modal);
+                        toggleResetMenu.checked = false;
+                    }
+                };
+
+                // Settings: Client Fix (placeholder, could be used for re-centering or specific fixes)
+                const toggleClientFix = document.getElementById('rat-toggle-clientfix');
+                if (toggleClientFix) toggleClientFix.onchange = () => {
+                    if (toggleClientFix.checked) {
+                        clientContainer.style.top = "50px";
+                        clientContainer.style.left = "50px";
+                        // Could add more "fix" logic here
+                        console.log("Rat Tool: Attempted client fix (re-positioned).");
+                        toggleClientFix.checked = false;
+                    }
+                };
+            }
+
+            // --- Matrix Effect Functions ---
+            function startMatrixEffect() {
+                if (matrixIntervalId) return; // Already running
+                matrixCanvas = document.createElement('canvas');
+                matrixCanvas.id = 'rat-matrix-canvas'; // Use the ID from styles
+                document.body.appendChild(matrixCanvas);
+                matrixCtx = matrixCanvas.getContext('2d');
+
+                const resizeMatrix = () => {
+                    matrixCanvas.width = window.innerWidth;
+                    matrixCanvas.height = window.innerHeight;
+                    matrixColumns = matrixCanvas.width / matrixFontSize;
+                    matrixDrops = [];
+                    for (let x = 0; x < matrixColumns; x++) matrixDrops[x] = 1;
+                };
+                window.addEventListener('resize', resizeMatrix);
+                resizeMatrix(); // Initial size
+
+                matrixIntervalId = setInterval(drawMatrix, 40); // Adjusted speed
+                matrixCanvas.style.display = 'block';
+            }
+            function drawMatrix() {
+                if (!matrixCtx || !matrixCanvas) return;
+                matrixCtx.fillStyle = 'rgba(0, 0, 0, 0.04)'; // Slower fade for trails
+                matrixCtx.fillRect(0, 0, matrixCanvas.width, matrixCanvas.height);
+                matrixCtx.fillStyle = '#0F0'; // Green text
+                matrixCtx.font = matrixFontSize + 'px monospace';
+
+                for (let i = 0; i < matrixDrops.length; i++) {
+                    const text = matrixChars[Math.floor(Math.random() * matrixChars.length)];
+                    matrixCtx.fillText(text, i * matrixFontSize, matrixDrops[i] * matrixFontSize);
+                    if (matrixDrops[i] * matrixFontSize > matrixCanvas.height && Math.random() > 0.975) {
+                        matrixDrops[i] = 0;
+                    }
+                    matrixDrops[i]++;
+                }
+            }
+            function stopMatrixEffect() {
+                clearInterval(matrixIntervalId);
+                matrixIntervalId = null;
+                if (matrixCanvas) {
+                    matrixCanvas.remove();
+                    matrixCanvas = null;
+                    matrixCtx = null;
+                }
+                window.removeEventListener('resize', stopMatrixEffect); // Assuming resizeMatrix was the listener
+            }
+
+            // --- Autoclicker Functions ---
+            function startAutoclicker() {
+                if (isAutoclicking) return;
+                isAutoclicking = true;
+                mouseMoveListenerGlobal = (e) => { lastMouseX = e.clientX; lastMouseY = e.clientY; };
+                document.addEventListener('mousemove', mouseMoveListenerGlobal);
+
+                autoclickIntervalId = setInterval(() => {
+                    const el = document.elementFromPoint(lastMouseX, lastMouseY);
+                    if (el && typeof el.click === 'function') {
+                        el.click();
+                    }
+                }, 100); // Click interval: 100ms
+
+                autoclickerKeydownListener = (e) => {
+                    if (e.key === '`') { // Backtick to stop
+                        stopAutoclicker();
+                        const toggleAutoclick = document.getElementById('rat-toggle-autoclick');
+                        if (toggleAutoclick) toggleAutoclick.checked = false;
+                    }
+                };
+                document.addEventListener('keydown', autoclickerKeydownListener);
+                console.log("Rat Tool: Autoclicker started. Press '`' (backtick) to stop.");
+            }
+            function stopAutoclicker() {
+                if (!isAutoclicking) return;
+                isAutoclicking = false;
+                clearInterval(autoclickIntervalId);
+                autoclickIntervalId = null;
+                if (mouseMoveListenerGlobal) document.removeEventListener('mousemove', mouseMoveListenerGlobal);
+                mouseMoveListenerGlobal = null;
+                if (autoclickerKeydownListener) document.removeEventListener('keydown', autoclickerKeydownListener);
+                autoclickerKeydownListener = null;
+                console.log("Rat Tool: Autoclicker stopped.");
+            }
+
+            // --- Script Executor ---
+            function initializeScriptExecutor() {
+                const scriptInput = document.getElementById('rat-script-input');
+                const executeBtn = document.getElementById('rat-script-execute-button');
+                const backupExecuteBtn = document.getElementById('rat-script-execute-backup-button');
+                const saveBtn = document.getElementById('rat-script-save-button');
+                const loadBtnStyled = document.getElementById('rat-script-load-button-styled');
+                const loadFileInput = document.getElementById('rat-script-file-input');
+
+                if (executeBtn && scriptInput) executeBtn.onclick = () => executeScript(scriptInput.value);
+                if (backupExecuteBtn && scriptInput) backupExecuteBtn.onclick = () => executeScriptBackup(scriptInput.value);
+
+                if (saveBtn && scriptInput) saveBtn.onclick = () => {
+                    const scriptContent = scriptInput.value;
+                    const blob = new Blob([scriptContent], { type: 'text/javascript' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'rat_script.js';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                };
+
+                if (loadBtnStyled && loadFileInput) loadBtnStyled.onclick = () => loadFileInput.click();
+                if (loadFileInput && scriptInput) loadFileInput.onchange = (event) => {
+                    const file = event.target.files[0];
+                    if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => { scriptInput.value = e.target.result; };
+                        reader.readAsText(file);
+                    }
+                };
+            }
+            function executeScript(scriptString) {
+                try {
+                    new Function(scriptString)();
+                    console.log("Rat Tool: Script executed.");
+                } catch (e) {
+                    console.error("Rat Tool: Script execution error:", e);
+                    // Using a custom modal for alert
+                    const modal = document.createElement('div');
+                    modal.style.cssText = `
+                        position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                        background-color: var(--current-bg-secondary); padding: 20px; border-radius: 10px;
+                        box-shadow: 0 5px 15px rgba(0,0,0,0.3); z-index: 2147483647;
+                        color: var(--current-text-bright); text-align: center;
+                    `;
+                    modal.innerHTML = `
+                        <p>Script Error: ${e.message}</p>
+                        <button class="rat-action-button" onclick="this.parentNode.remove()">OK</button>
+                    `;
+                    document.body.appendChild(modal);
+                }
+            }
+            function executeScriptBackup(scriptString) { // Executes in global scope, more risky
+                try {
+                    const scriptTag = document.createElement('script');
+                    scriptTag.textContent = scriptString;
+                    document.body.appendChild(scriptTag).remove(); // Append, run, then remove
+                    console.log("Rat Tool: Backup script executed.");
+                } catch (e) {
+                    console.error("Rat Tool: Backup script execution error:", e);
+                    // Using a custom modal for alert
+                    const modal = document.createElement('div');
+                    modal.style.cssText = `
+                        position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                        background-color: var(--current-bg-secondary); padding: 20px; border-radius: 10px;
+                        box-shadow: 0 5px 15px rgba(0,0,0,0.3); z-index: 2147483647;
+                        color: var(--current-text-bright); text-align: center;
+                    `;
+                    modal.innerHTML = `
+                        <p>Backup Script Error: ${e.message}</p>
+                        <button class="rat-action-button" onclick="this.parentNode.remove()">OK</button>
+                    `;
+                    document.body.appendChild(modal);
+                }
+            }
+
+            // --- Initial call to set up the main menu ---
+            initializeMainMenu();
+        }; // End of clientFunction
+
+        // --- Bootstrap the Client ---
+        // 1. Add Styles
+        const styleSheetElement = document.createElement('style');
+        styleSheetElement.id = 'rat-styles';
+        styleSheetElement.textContent = stylesString;
+        document.head.appendChild(styleSheetElement);
+
+        // 2. Create Container and Add HTML
+        const clientContainerElement = document.createElement('div');
+        clientContainerElement.id = RAT_CLIENT_ID;
+
+        // Helper to parse HTML string into DOM elements
+        function parseHTML(htmlString) {
+            const template = document.createElement('template');
+            template.innerHTML = htmlString; // Setting innerHTML on a template element is generally safer
+            return template.content; // Returns a DocumentFragment
+        }
+
+        clientContainerElement.appendChild(parseHTML(mainMenuHTMLString));
+        document.body.appendChild(clientContainerElement);
+
+        // 3. Make it visible with animation
+        setTimeout(() => {
+            clientContainerElement.classList.add('rat-visible');
+        }, 50); // Short delay for CSS to apply
+
+        // 4. Run the client's core logic
+        // Wrap clientFunction execution in a try-catch for safety during injection
+        try {
+            clientFunction();
+            console.log("Rat Tool successfully initialized and injected.");
+        } catch (e) {
+            console.error("Rat Tool: Fatal error during initialization:", e);
+            // Clean up if major failure
+            if (clientContainerElement) clientContainerElement.remove();
+            if (styleSheetElement) styleSheetElement.remove();
+            const modal = document.createElement('div');
+            modal.style.cssText = `
+                position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                background-color: var(--current-bg-secondary); padding: 20px; border-radius: 10px;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.3); z-index: 2147483647;
+                color: var(--current-text-bright); text-align: center;
+            `;
+            modal.innerHTML = `
+                <p>Rat Tool failed to initialize. Check console for errors. Error: ${e.message}</p>
+                <button class="rat-action-button" onclick="this.parentNode.remove()">OK</button>
+            `;
+            document.body.appendChild(modal);
+        }
+
+    })();
